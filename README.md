@@ -1,6 +1,6 @@
 # BubblesOS
 
-![Image of the os running in Qemu](md/Zrzut ekranu_20250926_194220.png)
+![Image of the os running in Qemu](https://github.com/VegeSushi/BubblesOS/blob/main/md/Zrzut%20ekranu_20250926_194220.png?raw=true)
 
 ## Building
 
