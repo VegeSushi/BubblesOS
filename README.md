@@ -1,5 +1,7 @@
 # BubblesOS
 
+![Image of the os running in Qemu](md/Zrzut ekranu_20250926_194220.png)
+
 ## Building
 
 ### Requirements
