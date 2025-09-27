@@ -9,11 +9,6 @@ static void bios_putc(char c) {
     );
 }
 
-static void bios_puthex16(unsigned short v) {
-    const char* hex = "0123456789ABCDEF";
-    for (int i = 12; i >= 0; i -= 4) bios_putc(hex[(v >> i) & 0xF]);
-}
-
 static void bios_puts(const char* s) {
     while (*s) bios_putc(*s++);
 }
@@ -114,7 +109,7 @@ void kmain(void) {
     bios_puts("CS: ");
     unsigned short cs;
     __asm__ __volatile__("mov %%cs, %0" : "=r"(cs));
-    bios_puthex16(cs);
+    bios_putdec(cs);
     bios_newline();
     bios_puts("Conventional RAM: ");
     unsigned short kb;
