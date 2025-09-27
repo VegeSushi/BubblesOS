@@ -21,7 +21,7 @@ static void com1_init(void) {
     outb(COM1_BASE + 1, 0x00);   // DLM = 0
     outb(COM1_LCR, 0x03);        // 8N1, disable DLAB
     outb(COM1_BASE + 2, 0xC7);   // Enable FIFO, clear
-    outb(COM1_IER, 0x0B);        // Enable IRQs if needed
+    outb(COM1_IER, 0x0B);
 }
 
 static void com1_putc(char c) {
@@ -185,14 +185,19 @@ void kmain(void) {
             bios_puts("Initializing COM1");
             com1_init();
             bios_newline();
-            bios_puts("What do you want to send to the serial port?");
-            bios_newline();
-            char cmd[80];
-            bios_puts("COM1>");
-            read_command(cmd, sizeof(cmd));
-            com1_puts(cmd);
-            com1_newline();
-            bios_puts("Send!");
+            bios_puts("Type !q to quit");
+            for (;;) {
+                bios_newline();
+                char cmd[80];
+                bios_puts("COM1>");
+                read_command(cmd, sizeof(cmd));
+                if (!strcmp(cmd, "!q")) {
+                    break;
+                }
+                com1_puts(cmd);
+                com1_newline();
+                bios_puts("Send!");
+            }
         } else {
             bios_puts("Owhno, Unknwon command!");
         }
