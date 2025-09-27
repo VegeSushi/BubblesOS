@@ -1,3 +1,47 @@
+#define COM1_BASE 0x3F8
+#define COM1_DATA (COM1_BASE + 0)
+#define COM1_IER  (COM1_BASE + 1)
+#define COM1_LCR  (COM1_BASE + 3)
+#define COM1_LSR  (COM1_BASE + 5)
+
+static inline void outb(unsigned short port, unsigned char val) {
+    __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline unsigned char inb(unsigned short port) {
+    unsigned char ret;
+    __asm__ __volatile__("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static void com1_init(void) {
+    outb(COM1_IER, 0x00);        // Disable interrupts
+    outb(COM1_LCR, 0x80);        // Enable DLAB
+    outb(COM1_BASE + 0, 0x01);   // DLL = 1 (115200 baud)
+    outb(COM1_BASE + 1, 0x00);   // DLM = 0
+    outb(COM1_LCR, 0x03);        // 8N1, disable DLAB
+    outb(COM1_BASE + 2, 0xC7);   // Enable FIFO, clear
+    outb(COM1_IER, 0x0B);        // Enable IRQs if needed
+}
+
+static void com1_putc(char c) {
+    while (!(inb(COM1_LSR) & 0x20)); // Wait for THR empty
+    outb(COM1_DATA, c);
+}
+
+static void com1_newline(void) {
+    com1_putc('\r');
+    com1_putc('\n');
+}
+
+
+static void com1_puts(const char *s) {
+    while (*s) {
+        com1_putc(*s++);
+    }
+}
+
+
 static void bios_putc(char c) {
     __asm__ __volatile__ (
         "movb $0x0E, %%ah \n\t"
@@ -129,7 +173,7 @@ void kmain(void) {
     bios_newline();
     for (;;) {
         char cmd[80];
-        bios_puts(">");
+        bios_putc('>');
         read_command(cmd, sizeof(cmd));
         bios_newline();
         if (!strcmp(cmd, "reboot")) {
@@ -137,6 +181,18 @@ void kmain(void) {
         } else if (!strcmp(cmd, "halt")) {
             bios_puts("Halting...");
             for (;;) __asm__ __volatile__("hlt");
+        } else if (!strcmp(cmd, "com")) {
+            bios_puts("Initializing COM1");
+            com1_init();
+            bios_newline();
+            bios_puts("What do you want to send to the serial port?");
+            bios_newline();
+            char cmd[80];
+            bios_puts("COM1>");
+            read_command(cmd, sizeof(cmd));
+            com1_puts(cmd);
+            com1_newline();
+            bios_puts("Send!");
         } else {
             bios_puts("Owhno, Unknwon command!");
         }

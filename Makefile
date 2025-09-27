@@ -46,7 +46,7 @@ info:
 	@echo "KERNEL_SECTORS=$(KERNEL_SECTORS)"
 
 run: $(IMG)
-	qemu-system-i386 -drive file=$(IMG),format=raw,if=floppy -boot a -no-reboot -no-shutdown
+	qemu-system-i386 -drive file=$(IMG),format=raw,if=floppy -boot a -no-reboot -no-shutdown -serial stdio
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUT_DIR)
