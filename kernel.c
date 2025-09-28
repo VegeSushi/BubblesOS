@@ -17,7 +17,7 @@ static inline unsigned char inb(unsigned short port) {
 static void com1_init(void) {
     outb(COM1_IER, 0x00);        // Disable interrupts
     outb(COM1_LCR, 0x80);        // Enable DLAB
-    outb(COM1_BASE + 0, 0x01);   // DLL = 1 (115200 baud)
+    outb(COM1_BASE + 0, 0x0C);
     outb(COM1_BASE + 1, 0x00);   // DLM = 0
     outb(COM1_LCR, 0x03);        // 8N1, disable DLAB
     outb(COM1_BASE + 2, 0xC7);   // Enable FIFO, clear
