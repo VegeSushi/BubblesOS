@@ -1,8 +1,46 @@
+#include <stdint.h>
+
 #define COM1_BASE 0x3F8
 #define COM1_DATA (COM1_BASE + 0)
 #define COM1_IER  (COM1_BASE + 1)
 #define COM1_LCR  (COM1_BASE + 3)
 #define COM1_LSR  (COM1_BASE + 5)
+
+#define FLOPPY_DRIVE_A 0x00
+
+struct __attribute__((packed)) fat12_boot_sector {
+    unsigned char  jump[3];
+    unsigned char  oem[8];
+    uint16_t       bytes_per_sector;
+    uint8_t        sectors_per_cluster;
+    uint16_t       reserved_sectors;
+    uint8_t        num_fats;
+    uint16_t       root_entries;
+    uint16_t       total_sectors_short;
+    uint8_t        media_descriptor;
+    uint16_t       sectors_per_fat;
+    uint16_t       sectors_per_track;
+    uint16_t       num_heads;
+    uint32_t       hidden_sectors;
+    uint32_t       total_sectors_long;
+};
+
+struct __attribute__((packed)) fat12_dir_entry {
+    unsigned char name[8];           // Offset 0-7: Filename (8 bytes)
+    unsigned char ext[3];            // Offset 8-10: Extension (3 bytes)
+    uint8_t       attr;              // Offset 11: Attributes
+    uint8_t       reserved;          // Offset 12: Reserved (Windows NT)
+    uint8_t       ctime_ms;          // Offset 13: Creation time, fine resolution
+    uint16_t      ctime;             // Offset 14-15: Creation time
+    uint16_t      cdate;             // Offset 16-17: Creation date
+    uint16_t      adate;             // Offset 18-19: Last access date
+    uint16_t      cluster_high;      // Offset 20-21: High 16 bits of cluster (FAT32, 0 for FAT12)
+    uint16_t      mtime;             // Offset 22-23: Last modification time
+    uint16_t      mdate;             // Offset 24-25: Last modification date
+    uint16_t      start_cluster;     // Offset 26-27: Starting cluster (LOW 16 bits)
+    uint32_t      size;              // Offset 28-31: File size in bytes
+};
+
 
 static inline void outb(unsigned short port, unsigned char val) {
     __asm__ __volatile__("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -131,6 +169,244 @@ int strcmp(const char *a, const char *b) {
     return *(const unsigned char*)a - *(const unsigned char*)b;
 }
 
+extern unsigned char bios_read_sector(
+    unsigned char drive,
+    unsigned char head,
+    unsigned char track,
+    unsigned char sector,
+    void* buffer
+);
+
+static struct fat12_boot_sector boot_sector;
+static unsigned char fat_buffer[512 * 9];
+static unsigned char root_dir_buffer[512 * 14];
+static unsigned char file_buffer[512];
+static unsigned char fat12_initialized = 0;
+
+// Helper function to read the FAT12 boot sector from floppy A:
+static int fat12_read_boot_sector(void) {
+    if (bios_read_sector(FLOPPY_DRIVE_A, 0, 0, 1, &boot_sector)) {
+        return -1;
+    }
+    return 0;
+}
+
+// Helper function to read the FAT from floppy A:
+static int fat12_read_fat(void) {
+    struct fat12_boot_sector *bs = &boot_sector;
+    unsigned int fat_start_sector = bs->reserved_sectors;
+
+    for (unsigned int i = 0; i < bs->sectors_per_fat; i++) {
+        unsigned int lba = fat_start_sector + i;
+        unsigned char cyl = lba / (bs->sectors_per_track * bs->num_heads);
+        unsigned char temp = lba % (bs->sectors_per_track * bs->num_heads);
+        unsigned char head = temp / bs->sectors_per_track;
+        unsigned char sector = (temp % bs->sectors_per_track) + 1;
+
+        if (bios_read_sector(FLOPPY_DRIVE_A, head, cyl, sector, &fat_buffer[i * 512])) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// Helper function to read root directory from floppy A:
+static int fat12_read_root_dir(void) {
+    struct fat12_boot_sector *bs = &boot_sector;
+    unsigned int root_start = bs->reserved_sectors + (bs->num_fats * bs->sectors_per_fat);
+    unsigned int root_sectors = (bs->root_entries * 32) / bs->bytes_per_sector;
+
+    for (unsigned int i = 0; i < root_sectors; i++) {
+        unsigned int lba = root_start + i;
+        unsigned char cyl = lba / (bs->sectors_per_track * bs->num_heads);
+        unsigned char temp = lba % (bs->sectors_per_track * bs->num_heads);
+        unsigned char head = temp / bs->sectors_per_track;
+        unsigned char sector = (temp % bs->sectors_per_track) + 1;
+
+        if (bios_read_sector(FLOPPY_DRIVE_A, head, cyl, sector, &root_dir_buffer[i * 512])) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static unsigned short fat12_get_next_cluster(unsigned short cluster) {
+    unsigned int fat_offset = cluster + (cluster / 2);  // cluster * 1.5
+
+    // Fix: Use memcpy or manual byte access to avoid strict-aliasing
+    unsigned short next_cluster;
+    unsigned char *ptr = &fat_buffer[fat_offset];
+    next_cluster = ptr[0] | (ptr[1] << 8);  // Manual little-endian read
+
+    if (cluster & 1) {
+        next_cluster >>= 4;  // Odd cluster, use high 12 bits
+    } else {
+        next_cluster &= 0x0FFF;  // Even cluster, use low 12 bits
+    }
+
+    return next_cluster;
+}
+
+// Convert 8.3 filename to padded format (keep as-is)
+static void format_filename(const char *input, char *output) {
+    int i, j;
+
+    for (i = 0; i < 11; i++) {
+        output[i] = ' ';
+    }
+    output[11] = 0;
+
+    for (i = 0; i < 8 && input[i] && input[i] != '.'; i++) {
+        output[i] = input[i];
+        if (output[i] >= 'a' && output[i] <= 'z') {
+            output[i] -= 32;
+        }
+    }
+
+    const char *ext = input;
+    while (*ext && *ext != '.') ext++;
+    if (*ext == '.') {
+        ext++;
+        for (j = 0; j < 3 && ext[j]; j++) {
+            output[8 + j] = ext[j];
+            if (output[8 + j] >= 'a' && output[8 + j] <= 'z') {
+                output[8 + j] -= 32;
+            }
+        }
+    }
+}
+
+static void fat12_list_files(void) {
+    if (!fat12_initialized) {
+        bios_puts("Error: FAT12 not mounted! Use 'mount' first.");
+        bios_newline();
+        return;
+    }
+
+    struct fat12_boot_sector *bs = &boot_sector;
+    struct fat12_dir_entry *entries = (struct fat12_dir_entry*)root_dir_buffer;
+
+    bios_puts("Files on A:");
+    bios_newline();
+
+    unsigned int file_count = 0;
+
+    for (unsigned int i = 0; i < bs->root_entries; i++) {
+        struct fat12_dir_entry *entry = &entries[i];
+
+        // CRITICAL: Check for end of directory FIRST
+        if (entry->name[0] == 0x00) {
+            break;  // End of directory - stop immediately
+        }
+
+        // Skip deleted files
+        if ((unsigned char)entry->name[0] == 0xE5) {
+            continue;
+        }
+
+        // Skip volume labels
+        if (entry->attr & 0x08) {
+            continue;
+        }
+
+        // Skip entries with invalid attributes (like 0x0F for LFN)
+        if (entry->attr == 0x0F) {
+            continue;  // Long filename entry
+        }
+
+        // Additional validation: check if name has printable characters
+        int valid = 0;
+        for (int j = 0; j < 8; j++) {
+            unsigned char c = entry->name[j];
+            // Check for printable ASCII or space
+            if ((c >= 0x20 && c <= 0x7E) || c == 0x05) {
+                valid = 1;
+                break;
+            }
+        }
+
+        if (!valid) {
+            continue;  // Skip entries with non-printable names
+        }
+
+        file_count++;
+
+        // Print filename (handle 0x05 special case - should be 0xE5)
+        for (int j = 0; j < 8; j++) {
+            unsigned char c = entry->name[j];
+            if (c == ' ') break;
+            if (c == 0x05) c = 0xE5;  // Special case for Japanese characters
+            bios_putc(c);
+        }
+
+        // Print extension if present
+        if (entry->ext[0] != ' ' && entry->ext[0] != 0) {
+            bios_putc('.');
+            for (int j = 0; j < 3; j++) {
+                unsigned char c = entry->ext[j];
+                if (c == ' ' || c == 0) break;
+                bios_putc(c);
+            }
+        }
+
+        // Print info
+        if (entry->attr & 0x10) {
+            bios_puts(" <DIR>");
+        } else {
+            bios_puts(" ");
+            bios_putdec(entry->size);
+            bios_puts(" bytes");
+        }
+
+        bios_newline();
+    }
+
+    bios_newline();
+    bios_putdec(file_count);
+    bios_puts(" file(s)");
+    bios_newline();
+}
+
+// FIXED: Initialize FAT12 with proper error handling
+static int fat12_init(void) {
+    bios_puts("Mounting A:...");
+    bios_newline();
+
+    if (fat12_read_boot_sector()) {
+        bios_puts("Error: Cannot read boot sector!");
+        bios_newline();
+        fat12_initialized = 0;
+        return -1;
+    }
+
+    // Validate it's a proper FAT12 floppy
+    if (boot_sector.bytes_per_sector != 512) {
+        bios_puts("Error: Invalid sector size!");
+        bios_newline();
+        fat12_initialized = 0;
+        return -1;
+    }
+
+    if (fat12_read_fat()) {
+        bios_puts("Error: Cannot read FAT!");
+        bios_newline();
+        fat12_initialized = 0;
+        return -1;
+    }
+
+    if (fat12_read_root_dir()) {
+        bios_puts("Error: Cannot read root directory!");
+        bios_newline();
+        fat12_initialized = 0;
+        return -1;
+    }
+
+    fat12_initialized = 1;
+    bios_puts("A: mounted successfully!");
+    bios_newline();
+    return 0;
+}
+
 void print_banner(void) {
     bios_puts("  ____        _     _     _                  _  __                    _ ");
     bios_newline();
@@ -198,6 +474,10 @@ void kmain(void) {
                 com1_newline();
                 bios_puts("Send!");
             }
+        } else if (!strcmp(cmd, "ls")) {
+            fat12_list_files();
+        } else if (!strcmp(cmd, "mount")) {
+            fat12_init();
         } else {
             bios_puts("Owhno, Unknwon command!");
         }

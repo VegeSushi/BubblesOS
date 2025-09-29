@@ -9,6 +9,7 @@ BUILD_DIR := build
 OUT_DIR   := out
 
 BOOT_BIN   := $(BUILD_DIR)/boot.bin
+BIOS_READ_O := $(BUILD_DIR)/bios_read_sector.o
 KERNEL_O   := $(BUILD_DIR)/kernel.o
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
@@ -26,11 +27,14 @@ $(BUILD_DIR) $(OUT_DIR):
 $(BOOT_BIN): boot.asm | $(BUILD_DIR)
 	$(NASM) -f bin -D KERNEL_SECTORS=$(KERNEL_SECTORS) -o $@ $<
 
+$(BIOS_READ_O): bios_read_sector.asm | $(BUILD_DIR)
+	$(NASM) -f elf -o $@ $<
+
 $(KERNEL_O): kernel.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(KERNEL_ELF): $(KERNEL_O) linker.ld | $(BUILD_DIR)
-	$(LD) $(LDFLAGS) -o $@ $(KERNEL_O)
+$(KERNEL_ELF): $(KERNEL_O) $(BIOS_READ_O) linker.ld | $(BUILD_DIR)
+	$(LD) $(LDFLAGS) -o $@ $(KERNEL_O) $(BIOS_READ_O)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	cp $(KERNEL_ELF) $@
