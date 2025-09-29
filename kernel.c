@@ -52,6 +52,44 @@ static inline unsigned char inb(unsigned short port) {
     return ret;
 }
 
+int str_to_int(const char *s) {
+    int val = 0;
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    return val;
+}
+
+unsigned int div32_16(unsigned long n, unsigned int d) {
+    unsigned int q = 0;
+    while (n >= d) {
+        n -= d;
+        q++;
+    }
+    return q;
+}
+
+void speaker_on(unsigned int freq) {
+    unsigned int divisor = div32_16(1193180UL, freq);
+
+    // set PIT channel 2, mode 3
+    outb(0x43, 0xB6);
+    outb(0x42, divisor & 0xFF);
+    outb(0x42, (divisor >> 8) & 0xFF);
+
+    // enable speaker
+    unsigned char tmp = inb(0x61);
+    tmp |= 3; // bits 0+1
+    outb(0x61, tmp);
+}
+
+void speaker_off(void) {
+    unsigned char tmp = inb(0x61);
+    tmp &= 0xFC; // clear bits 0+1
+    outb(0x61, tmp);
+}
+
 static void com1_init(void) {
     outb(COM1_IER, 0x00);        // Disable interrupts
     outb(COM1_LCR, 0x80);        // Enable DLAB
@@ -622,6 +660,14 @@ void kmain(void) {
             } else {
                 bios_puts("Error: FAT12 not mounted! Use 'mount' first.");
             }
+        } else if (!strcmp(command, "beepon")) {
+            if (arg[0] != 0) {
+                speaker_on(str_to_int(arg));
+            } else {
+                bios_puts("Missing argument: frequency");
+            }
+        } else if (!strcmp(command, "beepoff")) {
+            speaker_off();
         } else {
             bios_puts("Owhno, Unknwon command!");
         }

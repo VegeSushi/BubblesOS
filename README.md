@@ -8,6 +8,7 @@
 
 1. nasm
 2. gcc-ia16 (can be installed from AUR)
+3. make
 
 ### Actually building
 
