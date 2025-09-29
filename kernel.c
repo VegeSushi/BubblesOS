@@ -79,7 +79,6 @@ static void com1_puts(const char *s) {
     }
 }
 
-
 static void bios_putc(char c) {
     __asm__ __volatile__ (
         "movb $0x0E, %%ah \n\t"
@@ -407,6 +406,135 @@ static int fat12_init(void) {
     return 0;
 }
 
+static struct fat12_dir_entry* fat12_find_file(const char *filename) {
+    if (!fat12_initialized) return 0;
+
+    char formatted[12];
+    format_filename(filename, formatted); // Produces 8+3 padded string
+
+    struct fat12_dir_entry *entries = (struct fat12_dir_entry*)root_dir_buffer;
+
+    for (unsigned int i = 0; i < boot_sector.root_entries; i++) {
+        struct fat12_dir_entry *entry = &entries[i];
+
+        if (entry->name[0] == 0x00) break;   // End of directory
+        if ((unsigned char)entry->name[0] == 0xE5) continue; // Deleted
+        if (entry->attr & 0x08) continue;   // Volume label
+        if (entry->attr == 0x0F) continue;  // LFN entry
+
+        // Compare name ignoring trailing spaces
+        int match = 1;
+        for (int j = 0; j < 8; j++) {
+            unsigned char a = entry->name[j];
+            unsigned char b = formatted[j];
+
+            // Treat spaces as "padding"
+            if (a == ' ') a = 0;
+            if (b == ' ') b = 0;
+
+            if (a != b) {
+                match = 0;
+                break;
+            }
+        }
+
+        // Compare extension ignoring trailing spaces
+        if (match) {
+            for (int j = 0; j < 3; j++) {
+                unsigned char a = entry->ext[j];
+                unsigned char b = formatted[8 + j];
+
+                if (a == ' ') a = 0;
+                if (b == ' ') b = 0;
+
+                if (a != b) {
+                    match = 0;
+                    break;
+                }
+            }
+        }
+
+        if (match) return entry;
+    }
+
+    return 0; // Not found
+}
+
+static int fat12_read_cluster(unsigned short cluster, void *buffer) {
+    if (!fat12_initialized) return -1;
+
+    unsigned int first_data_sector =
+    boot_sector.reserved_sectors + (boot_sector.num_fats * boot_sector.sectors_per_fat) +
+    ((boot_sector.root_entries * 32) / boot_sector.bytes_per_sector);
+
+    unsigned int sector = first_data_sector + (cluster - 2) * boot_sector.sectors_per_cluster;
+
+    for (unsigned int i = 0; i < boot_sector.sectors_per_cluster; i++) {
+        unsigned int lba = sector + i;
+        unsigned char cyl = lba / (boot_sector.sectors_per_track * boot_sector.num_heads);
+        unsigned char temp = lba % (boot_sector.sectors_per_track * boot_sector.num_heads);
+        unsigned char head = temp / boot_sector.sectors_per_track;
+        unsigned char sec = (temp % boot_sector.sectors_per_track) + 1;
+
+        if (bios_read_sector(FLOPPY_DRIVE_A, head, cyl, sec, (unsigned char*)buffer + i * 512)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int fat12_read_file(const char *filename, void *buffer, unsigned int max_size) {
+    struct fat12_dir_entry *file = fat12_find_file(filename);
+    if (!file) return -1;
+
+    unsigned int remaining = file->size;
+    unsigned short cluster = file->start_cluster;
+    unsigned char *buf = (unsigned char*)buffer;
+
+    while (cluster < 0xFF8) { // FAT12 end-of-chain >= 0xFF8
+        if (remaining == 0) break;
+
+        unsigned int to_read = remaining > boot_sector.bytes_per_sector * boot_sector.sectors_per_cluster ?
+        boot_sector.bytes_per_sector * boot_sector.sectors_per_cluster : remaining;
+
+        if (to_read > max_size) return -1; // Buffer too small
+
+        if (fat12_read_cluster(cluster, buf)) return -1;
+
+        buf += to_read;
+        remaining -= to_read;
+        max_size -= to_read;
+
+        cluster = fat12_get_next_cluster(cluster);
+    }
+
+    return file->size; // Return bytes read
+}
+
+int split_command_arg(char *input, char **cmd, char **arg) {
+    // skip leading spaces
+    while (*input == ' ' || *input == '\t') input++;
+
+    *cmd = input;
+
+    while (*input && *input != ' ' && *input != '\t') input++;
+
+    if (*input) {
+        *input = 0;
+        input++;
+
+        while (*input == ' ' || *input == '\t') input++;
+
+        if (*input) {
+            *arg = input;
+            return 1;
+        }
+    }
+
+    *arg = "";
+    return 0;
+}
+
 void print_banner(void) {
     bios_puts("  ____        _     _     _                  _  __                    _ ");
     bios_newline();
@@ -451,13 +579,15 @@ void kmain(void) {
         char cmd[80];
         bios_putc('>');
         read_command(cmd, sizeof(cmd));
+        char *command, *arg;
+        split_command_arg(cmd, &command, &arg);
         bios_newline();
-        if (!strcmp(cmd, "reboot")) {
+        if (!strcmp(command, "reboot")) {
             __asm__ __volatile__("int $0x19");
-        } else if (!strcmp(cmd, "halt")) {
+        } else if (!strcmp(command, "halt")) {
             bios_puts("Halting...");
             for (;;) __asm__ __volatile__("hlt");
-        } else if (!strcmp(cmd, "com")) {
+        } else if (!strcmp(command, "com")) {
             bios_puts("Initializing COM1");
             com1_init();
             bios_newline();
@@ -474,10 +604,24 @@ void kmain(void) {
                 com1_newline();
                 bios_puts("Send!");
             }
-        } else if (!strcmp(cmd, "ls")) {
+        } else if (!strcmp(command, "ls")) {
             fat12_list_files();
-        } else if (!strcmp(cmd, "mount")) {
+        } else if (!strcmp(command, "mount")) {
             fat12_init();
+        } else if (!strcmp(command, "cat")) {
+            if (fat12_initialized) {
+                if (fat12_find_file(arg)) {
+                    char buffer[4096];
+                    int size = fat12_read_file(arg, buffer, sizeof(buffer));
+                    if (size > 0) {
+                        for (int i = 0; i < size; i++) bios_putc(buffer[i]);
+                    }
+                } else {
+                    bios_puts("File not found!");
+                }
+            } else {
+                bios_puts("Error: FAT12 not mounted! Use 'mount' first.");
+            }
         } else {
             bios_puts("Owhno, Unknwon command!");
         }
