@@ -580,6 +580,8 @@ typedef void (*user_app_t)(void);
 
 void run_app(const char *filename) {
     unsigned char *app_memory = (unsigned char *)APP_LOAD_ADDR;
+    bios_puts("Loading into memory...");
+    bios_newline();
     int size = fat12_read_file(filename, app_memory, APP_MAX_SIZE);
 
     if (size <= 0) {
@@ -589,6 +591,7 @@ void run_app(const char *filename) {
     }
 
     bios_puts("Running app...");
+    bios_newline();
     bios_newline();
 
     // Jump to app code
