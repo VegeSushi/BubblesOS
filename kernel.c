@@ -8,6 +8,9 @@
 
 #define FLOPPY_DRIVE_A 0x00
 
+#define APP_LOAD_ADDR 0x2000
+#define APP_MAX_SIZE  4096
+
 struct __attribute__((packed)) fat12_boot_sector {
     unsigned char  jump[3];
     unsigned char  oem[8];
@@ -573,6 +576,27 @@ int split_command_arg(char *input, char **cmd, char **arg) {
     return 0;
 }
 
+typedef void (*user_app_t)(void);
+
+void run_app(const char *filename) {
+    unsigned char *app_memory = (unsigned char *)APP_LOAD_ADDR;
+    int size = fat12_read_file(filename, app_memory, APP_MAX_SIZE);
+
+    if (size <= 0) {
+        bios_puts("Failed to load app!");
+        bios_newline();
+        return;
+    }
+
+    bios_puts("Running app...");
+    bios_newline();
+
+    // Jump to app code
+    user_app_t app = (user_app_t)APP_LOAD_ADDR;
+    app();  // Transfer control to the app
+}
+
+
 void print_banner(void) {
     bios_puts("  ____        _     _     _                  _  __                    _ ");
     bios_newline();
@@ -668,6 +692,16 @@ void kmain(void) {
             }
         } else if (!strcmp(command, "beepoff")) {
             speaker_off();
+        } else if (!strcmp(command, "run")) {
+            if (fat12_initialized) {
+                if (fat12_find_file(arg)) {
+                    run_app(arg);
+                } else {
+                    bios_puts("File not found!");
+                }
+            } else {
+                bios_puts("Error: FAT12 not mounted! Use 'mount' first.");
+            }
         } else {
             bios_puts("Owhno, Unknwon command!");
         }
